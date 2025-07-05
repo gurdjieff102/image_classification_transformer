@@ -18,7 +18,24 @@ class RMSNorm(nn.Module):
         rms = torch.sqrt(torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps)
         x = x / rms
         return x * self.gamma
+
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+class PatchEmbed(nn.Module):
+    def __init__(self, patch_size=4, in_channels=1, out_channels=128):
+        super(PatchEmbed, self).__init__()
+        self.patch_size = patch_size
+        self.proj = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=patch_size, stride=patch_size)
+    def forward(self, x):
+        x = self.proj(x)
+        b, c, h ,w = x.shape
+        x = x.view(b, c, h * w).transpose(1, 2)
+        return x 
     
+# x = torch.randn(32, 1, 28, 28).to(device)
+# patch_emb = PatchEmbed().to(device)
+# token = patch_emb(x)
+# print(token.shape)
+
 class MultiheadAttention(nn.Module):
     def __init__(self, dim, n_head, dropout=0.1):
         super(MultiheadAttention, self).__init__()
@@ -43,7 +60,6 @@ class MultiheadAttention(nn.Module):
         k = self.rot_emb.rotate_queries_or_keys(k)
         atten = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.n_d)
         if mask is not None:
-            print(atten.device)
             mask = mask.to(atten.device)
             atten = atten.masked_fill(mask==0, float('-inf'))
 
@@ -79,7 +95,8 @@ class EncoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        atten = self.atten(x)
+        mask = torch.tril(torch.ones(x.shape[1], x.shape[1]))
+        atten = self.atten(x, mask=mask)
         x = self.norm1(x + self.dropout(atten))
         ff_out = self.ff(x)
         x = self.norm2(x + self.dropout(ff_out))
@@ -96,10 +113,13 @@ class TransformerEncoder(L.LightningModule):
         self.loss_fn = nn.CrossEntropyLoss()
         self.transform = transforms.Compose([transforms.ToTensor()])
         self.batch_size = 32
+
+        self.patch_emb = PatchEmbed(4, 1, 128)
     def forward(self, x):
-        b, c, w, h = x.shape
-        x = x.view(b, c, -1)
-        x = self.emb(x)
+        # b, c, w, h = x.shape
+        # x = x.view(b, ｃ, w *ｈ)
+        # x = self.emb(x)
+        x = self.patch_emb(x)
         for layer in self.layers:
             x = layer(x)
         x = x.mean(1)
@@ -112,6 +132,7 @@ class TransformerEncoder(L.LightningModule):
         loss = self.loss_fn(x, y)
         self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss
+        pass
     
     def validation_step(self, batch, idx):
         x, y = batch
@@ -122,10 +143,9 @@ class TransformerEncoder(L.LightningModule):
         self.log('val_loss', loss, on_epoch=True, prog_bar=True)
         self.log('acc', acc, on_epoch=True, prog_bar=True)
         return loss
-
     
     def configure_optimizers(self):
-        return optim.Adam(self.parameters(), lr=0.001)
+        return optim.Adam(self.parameters(), lr=0.0005)
     
     def train_dataloader(self):
         train_ds = datasets.MNIST(root='./data',
